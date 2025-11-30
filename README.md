@@ -120,6 +120,13 @@ The app will be available at `http://localhost:5173`
 ## Environment Variables
 
 Backend configuration (`.env`):
+
+```
+cp server/.env.example server/.env
+```
+
+Update the `.env` file with your database credentials.
+
 ```
 DB_HOST=localhost
 DB_PORT=3306
