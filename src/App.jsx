@@ -1,5 +1,6 @@
 import { Calendar, CalendarPlus, ChevronLeft, ChevronRight, Clock, DollarSign, Download, Edit2, FileText, Play, Plus, Square, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { entriesApi, projectsApi, timerApi } from './api';
 
 function App() {
   const [projects, setProjects] = useState([]);
@@ -14,41 +15,59 @@ function App() {
   const [invoiceData, setInvoiceData] = useState({ clientName: '', clientEmail: '', invoiceNumber: '', notes: '' });
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(null);
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(null);
   const [showManualEntryModal, setShowManualEntryModal] = useState(false);
   const [manualEntry, setManualEntry] = useState({ projectId: '', hours: '', minutes: '', description: '' });
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [showEditEntryModal, setShowEditEntryModal] = useState(false);
+  const [loading, setLoading] = useState(true);
   const timerInterval = useRef(null);
 
-  // Load data from localStorage on mount
+  // Load data from API on mount
   useEffect(() => {
-    const savedProjects = localStorage.getItem('timeTrackerProjects');
-    const savedEntries = localStorage.getItem('timeTrackerEntries');
-    const savedActive = localStorage.getItem('timeTrackerActive');
+    const loadData = async () => {
+      try {
+        const [projectsData, entriesData, activeTimerData] = await Promise.all([
+          projectsApi.getAll(),
+          entriesApi.getAll(),
+          timerApi.getActive()
+        ]);
 
-    if (savedProjects) setProjects(JSON.parse(savedProjects));
-    if (savedEntries) setTimeEntries(JSON.parse(savedEntries));
-    if (savedActive) {
-      const active = JSON.parse(savedActive);
-      setActiveTimer(active);
-      setElapsedTime(Date.now() - active.startTime);
-    }
+        // Transform database fields to match frontend expectations
+        const transformedProjects = projectsData.map(p => ({
+          id: p.id,
+          name: p.name,
+          hourlyRate: parseFloat(p.hourly_rate),
+          createdAt: new Date(p.created_at).getTime()
+        }));
+
+        const transformedEntries = entriesData.map(e => ({
+          id: e.id,
+          projectId: e.project_id,
+          startTime: parseInt(e.start_time),
+          endTime: parseInt(e.end_time),
+          duration: parseInt(e.duration),
+          isManual: Boolean(e.is_manual),
+          description: e.description
+        }));
+
+        setProjects(transformedProjects);
+        setTimeEntries(transformedEntries);
+
+        if (activeTimerData && activeTimerData.projectId) {
+          setActiveTimer(activeTimerData);
+          setElapsedTime(Date.now() - activeTimerData.startTime);
+        }
+      } catch (error) {
+        console.error('Error loading data:', error);
+        alert('Failed to load data. Make sure the backend server is running.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
   }, []);
-
-  // Save to localStorage whenever data changes
-  useEffect(() => {
-    localStorage.setItem('timeTrackerProjects', JSON.stringify(projects));
-  }, [projects]);
-
-  useEffect(() => {
-    localStorage.setItem('timeTrackerEntries', JSON.stringify(timeEntries));
-  }, [timeEntries]);
-
-  useEffect(() => {
-    if (activeTimer) {
-      localStorage.setItem('timeTrackerActive', JSON.stringify(activeTimer));
-    } else {
-      localStorage.removeItem('timeTrackerActive');
-    }
-  }, [activeTimer]);
 
   // Timer effect
   useEffect(() => {
@@ -70,63 +89,116 @@ function App() {
     };
   }, [activeTimer]);
 
-  const addProject = (e) => {
+  const addProject = async (e) => {
     e.preventDefault();
     if (newProjectName.trim()) {
-      const newProject = {
-        id: Date.now(),
-        name: newProjectName.trim(),
-        hourlyRate: parseFloat(newProjectRate) || 0,
-        createdAt: Date.now(),
-      };
-      setProjects([...projects, newProject]);
-      setNewProjectName('');
-      setNewProjectRate('');
+      try {
+        const newProject = await projectsApi.create({
+          name: newProjectName.trim(),
+          hourlyRate: parseFloat(newProjectRate) || 0,
+        });
+
+        const transformedProject = {
+          id: newProject.id,
+          name: newProject.name,
+          hourlyRate: parseFloat(newProject.hourly_rate),
+          createdAt: new Date(newProject.created_at).getTime()
+        };
+
+        setProjects([...projects, transformedProject]);
+        setNewProjectName('');
+        setNewProjectRate('');
+      } catch (error) {
+        console.error('Error creating project:', error);
+        alert('Failed to create project');
+      }
     }
   };
 
-  const updateProjectRate = (projectId, newRate) => {
-    setProjects(projects.map(p =>
-      p.id === projectId ? { ...p, hourlyRate: parseFloat(newRate) || 0 } : p
-    ));
-    setEditingProject(null);
+  const updateProjectRate = async (projectId, newRate) => {
+    try {
+      await projectsApi.updateRate(projectId, parseFloat(newRate) || 0);
+      setProjects(projects.map(p =>
+        p.id === projectId ? { ...p, hourlyRate: parseFloat(newRate) || 0 } : p
+      ));
+      setEditingProject(null);
+    } catch (error) {
+      console.error('Error updating project rate:', error);
+      alert('Failed to update project rate');
+    }
   };
 
-  const deleteProject = (projectId) => {
+  const deleteProject = async (projectId) => {
     if (activeTimer?.projectId === projectId) {
-      stopTimer();
+      await stopTimer();
     }
-    setProjects(projects.filter(p => p.id !== projectId));
-    setTimeEntries(timeEntries.filter(e => e.projectId !== projectId));
+    try {
+      await projectsApi.delete(projectId);
+      setProjects(projects.filter(p => p.id !== projectId));
+      setTimeEntries(timeEntries.filter(e => e.projectId !== projectId));
+    } catch (error) {
+      console.error('Error deleting project:', error);
+      alert('Failed to delete project');
+    }
   };
 
-  const startTimer = (projectId) => {
+  const startTimer = async (projectId) => {
     if (activeTimer) {
-      stopTimer();
+      await stopTimer();
     }
-    setActiveTimer({
+    const timer = {
       projectId,
       startTime: Date.now(),
-    });
-  };
-
-  const stopTimer = () => {
-    if (activeTimer) {
-      const duration = Date.now() - activeTimer.startTime;
-      const newEntry = {
-        id: Date.now(),
-        projectId: activeTimer.projectId,
-        startTime: activeTimer.startTime,
-        endTime: Date.now(),
-        duration,
-      };
-      setTimeEntries([...timeEntries, newEntry]);
-      setActiveTimer(null);
+    };
+    try {
+      await timerApi.setActive(timer);
+      setActiveTimer(timer);
+    } catch (error) {
+      console.error('Error starting timer:', error);
+      alert('Failed to start timer');
     }
   };
 
-  const deleteEntry = (entryId) => {
-    setTimeEntries(timeEntries.filter(e => e.id !== entryId));
+  const stopTimer = async () => {
+    if (activeTimer) {
+      const duration = Date.now() - activeTimer.startTime;
+      try {
+        const newEntry = await entriesApi.create({
+          projectId: activeTimer.projectId,
+          startTime: activeTimer.startTime,
+          endTime: Date.now(),
+          duration,
+          isManual: false,
+        });
+
+        const transformedEntry = {
+          id: newEntry.id,
+          projectId: newEntry.project_id,
+          startTime: parseInt(newEntry.start_time),
+          endTime: parseInt(newEntry.end_time),
+          duration: parseInt(newEntry.duration),
+          isManual: Boolean(newEntry.is_manual),
+          description: newEntry.description
+        };
+
+        setTimeEntries([...timeEntries, transformedEntry]);
+        await timerApi.clearActive();
+        setActiveTimer(null);
+      } catch (error) {
+        console.error('Error stopping timer:', error);
+        alert('Failed to stop timer');
+      }
+    }
+  };
+
+  const deleteEntry = async (entryId) => {
+    try {
+      await entriesApi.delete(entryId);
+      setTimeEntries(timeEntries.filter(e => e.id !== entryId));
+    } catch (error) {
+      console.error('Error deleting entry:', error);
+      alert('Failed to delete entry');
+    }
   };
 
   const formatDuration = (ms) => {
@@ -325,7 +397,7 @@ function App() {
     return msToHours(totalMs);
   };
 
-  const addManualEntry = () => {
+  const addManualEntry = async () => {
     if (!manualEntry.projectId || (!manualEntry.hours && !manualEntry.minutes)) {
       alert('Please select a project and enter hours or minutes');
       return;
@@ -337,24 +409,91 @@ function App() {
     const startTime = new Date(selectedDate);
     startTime.setHours(9, 0, 0, 0); // Default to 9 AM
 
-    const newEntry = {
-      id: Date.now(),
-      projectId: parseInt(manualEntry.projectId),
-      startTime: startTime.getTime(),
-      endTime: startTime.getTime() + durationMs,
-      duration: durationMs,
-      isManual: true,
-      description: manualEntry.description,
-    };
+    try {
+      const newEntry = await entriesApi.create({
+        projectId: parseInt(manualEntry.projectId),
+        startTime: startTime.getTime(),
+        endTime: startTime.getTime() + durationMs,
+        duration: durationMs,
+        isManual: true,
+        description: manualEntry.description || null,
+      });
 
-    setTimeEntries([...timeEntries, newEntry]);
-    setShowManualEntryModal(false);
-    setManualEntry({ projectId: '', hours: '', minutes: '', description: '' });
+      const transformedEntry = {
+        id: newEntry.id,
+        projectId: newEntry.project_id,
+        startTime: parseInt(newEntry.start_time),
+        endTime: parseInt(newEntry.end_time),
+        duration: parseInt(newEntry.duration),
+        isManual: Boolean(newEntry.is_manual),
+        description: newEntry.description
+      };
+
+      setTimeEntries([...timeEntries, transformedEntry]);
+      setShowManualEntryModal(false);
+      setManualEntry({ projectId: '', hours: '', minutes: '', description: '' });
+    } catch (error) {
+      console.error('Error adding manual entry:', error);
+      alert('Failed to add manual entry');
+    }
   };
 
   const openManualEntryModal = (date) => {
     setSelectedDate(date);
     setShowManualEntryModal(true);
+  };
+
+  const openEditEntryModal = (entry) => {
+    const durationHours = entry.duration / (1000 * 60 * 60);
+    const hours = Math.floor(durationHours);
+    const minutes = Math.round((durationHours - hours) * 60);
+
+    setEditingEntry({
+      id: entry.id,
+      projectId: entry.projectId.toString(),
+      hours: hours.toString(),
+      minutes: minutes.toString(),
+      description: entry.description || '',
+      startTime: entry.startTime,
+    });
+    setShowEditEntryModal(true);
+  };
+
+  const saveEditedEntry = async () => {
+    if (!editingEntry.projectId || (!editingEntry.hours && !editingEntry.minutes)) {
+      alert('Please select a project and enter hours or minutes');
+      return;
+    }
+
+    const totalHours = (parseFloat(editingEntry.hours) || 0) + (parseFloat(editingEntry.minutes) || 0) / 60;
+    const durationMs = totalHours * 60 * 60 * 1000;
+
+    try {
+      const updatedEntry = await entriesApi.update(editingEntry.id, {
+        projectId: parseInt(editingEntry.projectId),
+        startTime: editingEntry.startTime,
+        endTime: editingEntry.startTime + durationMs,
+        duration: durationMs,
+        description: editingEntry.description || null,
+      });
+
+      const transformedEntry = {
+        id: updatedEntry.id,
+        projectId: updatedEntry.project_id,
+        startTime: parseInt(updatedEntry.start_time),
+        endTime: parseInt(updatedEntry.end_time),
+        duration: parseInt(updatedEntry.duration),
+        isManual: Boolean(updatedEntry.is_manual),
+        description: updatedEntry.description
+      };
+
+      setTimeEntries(timeEntries.map(e => e.id === transformedEntry.id ? transformedEntry : e));
+      setShowEditEntryModal(false);
+      setEditingEntry(null);
+    } catch (error) {
+      console.error('Error updating entry:', error);
+      alert('Failed to update entry');
+    }
   };
 
   const previousMonth = () => {
@@ -364,6 +503,18 @@ function App() {
   const nextMonth = () => {
     setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1));
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center">
+        <div className="text-center">
+          <Clock className="w-16 h-16 text-indigo-600 animate-spin mx-auto mb-4" />
+          <p className="text-xl font-semibold text-gray-800">Loading...</p>
+          <p className="text-sm text-gray-600 mt-2">Make sure the backend server is running</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
@@ -570,19 +721,26 @@ function App() {
                 return (
                   <div
                     key={entry.id}
-                    className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                    className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer group"
+                    onClick={() => openEditEntryModal(entry)}
                   >
                     <div className="flex-1">
                       <p className="font-semibold text-gray-800">{project.name}</p>
                       <p className="text-sm text-gray-500">{formatDate(entry.startTime)}</p>
+                      {entry.description && (
+                        <p className="text-sm text-gray-600 mt-1 italic">{entry.description}</p>
+                      )}
                     </div>
                     <div className="flex items-center gap-4">
                       <span className="text-lg font-mono font-semibold text-indigo-600">
                         {formatDuration(entry.duration)}
                       </span>
                       <button
-                        onClick={() => deleteEntry(entry.id)}
-                        className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteEntry(entry.id);
+                        }}
+                        className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                         title="Delete entry"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -803,16 +961,19 @@ function App() {
                     const totalHours = getTotalHoursForDate(date);
                     const entries = getEntriesForDate(date);
 
+                    const isSelected = selectedCalendarDate?.toDateString() === date.toDateString();
+
                     days.push(
                       <div
                         key={day}
-                        onClick={() => openManualEntryModal(date)}
+                        onClick={() => setSelectedCalendarDate(date)}
                         className={`aspect-square border rounded-lg p-2 cursor-pointer transition-all hover:shadow-md hover:border-indigo-400 ${
+                          isSelected ? 'border-indigo-600 bg-indigo-100 ring-2 ring-indigo-300' :
                           isToday ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'
                         }`}
                       >
                         <div className="flex flex-col h-full">
-                          <span className={`text-sm font-medium ${isToday ? 'text-indigo-600' : 'text-gray-700'}`}>
+                          <span className={`text-sm font-medium ${isSelected || isToday ? 'text-indigo-600' : 'text-gray-700'}`}>
                             {day}
                           </span>
                           {totalHours > 0 && (
@@ -835,10 +996,85 @@ function App() {
               </div>
             </div>
 
+            {/* Selected Date Entries */}
+            {selectedCalendarDate && (
+              <div className="bg-white rounded-xl shadow-md p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xl font-semibold text-gray-800">
+                    {selectedCalendarDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                  </h3>
+                  <button
+                    onClick={() => openManualEntryModal(selectedCalendarDate)}
+                    className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Add Entry
+                  </button>
+                </div>
+
+                {(() => {
+                  const entries = getEntriesForDate(selectedCalendarDate);
+                  if (entries.length === 0) {
+                    return (
+                      <div className="text-center py-8 text-gray-500">
+                        <Calendar className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                        <p>No time entries for this date</p>
+                        <p className="text-sm mt-1">Click "Add Entry" to create one</p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-3">
+                      {entries.map(entry => {
+                        const project = projects.find(p => p.id === entry.projectId);
+                        if (!project) return null;
+
+                        return (
+                          <div
+                            key={entry.id}
+                            className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer group"
+                            onClick={() => openEditEntryModal(entry)}
+                          >
+                            <div className="flex-1">
+                              <p className="font-semibold text-gray-800">{project.name}</p>
+                              {entry.description && (
+                                <p className="text-sm text-gray-600 mt-1 italic">{entry.description}</p>
+                              )}
+                              {entry.isManual && (
+                                <span className="inline-block text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded mt-1">
+                                  Manual Entry
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-4">
+                              <span className="text-lg font-mono font-semibold text-indigo-600">
+                                {formatDuration(entry.duration)}
+                              </span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteEntry(entry.id);
+                                }}
+                                className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                title="Delete entry"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
             {/* Instructions */}
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
               <p className="text-blue-800 text-sm">
-                <strong>Tip:</strong> Click on any day to manually add time entries for that date.
+                <strong>Tip:</strong> Click on any day to view its time entries. Click on an entry to edit it, or click "Add Entry" to create a new one.
               </p>
             </div>
           </div>
@@ -927,6 +1163,92 @@ function App() {
                   className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
                 >
                   Add Entry
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Edit Entry Modal */}
+        {showEditEntryModal && editingEntry && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+              <h3 className="text-2xl font-bold text-gray-800 mb-4">
+                Edit Time Entry
+              </h3>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Project</label>
+                  <select
+                    value={editingEntry.projectId}
+                    onChange={(e) => setEditingEntry({ ...editingEntry, projectId: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="">Select a project</option>
+                    {projects.map(project => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Hours</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={editingEntry.hours}
+                      onChange={(e) => setEditingEntry({ ...editingEntry, hours: e.target.value })}
+                      placeholder="0"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Minutes</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="59"
+                      step="1"
+                      value={editingEntry.minutes}
+                      onChange={(e) => setEditingEntry({ ...editingEntry, minutes: e.target.value })}
+                      placeholder="0"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Description (Optional)</label>
+                  <textarea
+                    value={editingEntry.description}
+                    onChange={(e) => setEditingEntry({ ...editingEntry, description: e.target.value })}
+                    placeholder="What did you work on?"
+                    rows="3"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <button
+                  onClick={() => {
+                    setShowEditEntryModal(false);
+                    setEditingEntry(null);
+                  }}
+                  className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveEditedEntry}
+                  className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
+                >
+                  Save Changes
                 </button>
               </div>
             </div>
