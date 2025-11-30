@@ -122,10 +122,10 @@ The app will be available at `http://localhost:5173`
 Backend configuration (`.env`):
 
 ```
-cp server/.env.example server/.env
+cp .env.example server/.env
 ```
 
-Update the `.env` file with your database credentials.
+Update the `server/.env` file with your database credentials.
 
 ```
 DB_HOST=localhost
