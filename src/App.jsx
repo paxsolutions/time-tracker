@@ -9,9 +9,10 @@ function App() {
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectRate, setNewProjectRate] = useState('');
   const [elapsedTime, setElapsedTime] = useState(0);
-  const [currentView, setCurrentView] = useState('tracker'); // 'tracker', 'weekly', 'invoice', 'calendar'
+  const [currentView, setCurrentView] = useState('tracker'); // 'tracker', 'calendar', 'weekly', 'monthly', 'invoice'
   const [editingProject, setEditingProject] = useState(null);
   const [selectedWeek, setSelectedWeek] = useState(null);
+  const [selectedMonth, setSelectedMonth] = useState(null);
   const [invoiceData, setInvoiceData] = useState({ clientName: '', clientEmail: '', invoiceNumber: '', notes: '' });
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(null);
@@ -285,25 +286,78 @@ function App() {
     return Object.entries(weeks).sort((a, b) => b[1].weekStart - a[1].weekStart);
   };
 
-  const generateInvoice = (weekData) => {
-    const weekStart = new Date(weekData.weekStart);
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekEnd.getDate() + 6);
+  const getMonthlyData = () => {
+    const months = {};
+
+    timeEntries.forEach(entry => {
+      const date = new Date(entry.startTime);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const monthStart = new Date(date.getFullYear(), date.getMonth(), 1);
+
+      if (!months[monthKey]) {
+        months[monthKey] = {
+          monthStart,
+          monthEnd: new Date(date.getFullYear(), date.getMonth() + 1, 0),
+          projects: {},
+          totalHours: 0,
+          totalEarnings: 0,
+        };
+      }
+
+      const project = projects.find(p => p.id === entry.projectId);
+      if (!project) return;
+
+      if (!months[monthKey].projects[entry.projectId]) {
+        months[monthKey].projects[entry.projectId] = {
+          name: project.name,
+          hourlyRate: project.hourlyRate || 0,
+          duration: 0,
+          earnings: 0,
+        };
+      }
+
+      months[monthKey].projects[entry.projectId].duration += entry.duration;
+      const hours = msToHours(entry.duration);
+      months[monthKey].projects[entry.projectId].earnings += hours * (project.hourlyRate || 0);
+      months[monthKey].totalHours += hours;
+      months[monthKey].totalEarnings += hours * (project.hourlyRate || 0);
+    });
+
+    return Object.entries(months).sort((a, b) => b[1].monthStart - a[1].monthStart);
+  };
+
+  const generateInvoice = (periodData, isMonthly = false) => {
+    const periodStart = new Date(periodData.weekStart || periodData.monthStart);
+    const periodEnd = isMonthly ? new Date(periodData.monthEnd) : (() => {
+      const end = new Date(periodStart);
+      end.setDate(end.getDate() + 6);
+      return end;
+    })();
+
+    // Get all entries for this period
+    const periodEntries = timeEntries.filter(entry => {
+      const entryDate = new Date(entry.startTime);
+      return entryDate >= periodStart && entryDate <= periodEnd;
+    });
 
     let invoiceHTML = `
 <!DOCTYPE html>
 <html>
 <head>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; }
     .header { text-align: center; margin-bottom: 40px; }
     .invoice-details { margin-bottom: 30px; }
     .invoice-details div { margin: 5px 0; }
     table { width: 100%; border-collapse: collapse; margin: 20px 0; }
     th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
     th { background-color: #4f46e5; color: white; }
-    .total-row { font-weight: bold; background-color: #f9fafb; }
+    .project-header { background-color: #e0e7ff; font-weight: bold; }
+    .description { color: #6b7280; font-size: 0.9em; font-style: italic; }
+    .subtotal-row { background-color: #f3f4f6; font-weight: 600; }
+    .total-row { font-weight: bold; background-color: #e0e7ff; font-size: 1.1em; }
     .right-align { text-align: right; }
+    .center-align { text-align: center; }
   </style>
 </head>
 <body>
@@ -315,15 +369,16 @@ function App() {
   <div class="invoice-details">
     <div><strong>Bill To:</strong> ${invoiceData.clientName || 'Client Name'}</div>
     <div><strong>Email:</strong> ${invoiceData.clientEmail || 'client@example.com'}</div>
-    <div><strong>Period:</strong> ${weekStart.toLocaleDateString()} - ${weekEnd.toLocaleDateString()}</div>
+    <div><strong>Period:</strong> ${periodStart.toLocaleDateString()} - ${periodEnd.toLocaleDateString()}</div>
     <div><strong>Invoice Date:</strong> ${new Date().toLocaleDateString()}</div>
   </div>
 
   <table>
     <thead>
       <tr>
-        <th>Project</th>
-        <th class="right-align">Hours</th>
+        <th>Date</th>
+        <th>Description</th>
+        <th class="center-align">Hours</th>
         <th class="right-align">Rate</th>
         <th class="right-align">Amount</th>
       </tr>
@@ -331,26 +386,72 @@ function App() {
     <tbody>
 `;
 
-    Object.values(weekData.projects).forEach(project => {
-      const hours = msToHours(project.duration).toFixed(2);
+    // Group entries by project
+    const projectGroups = {};
+    periodEntries.forEach(entry => {
+      const project = projects.find(p => p.id === entry.projectId);
+      if (project) {
+        if (!projectGroups[project.id]) {
+          projectGroups[project.id] = {
+            name: project.name,
+            rate: project.hourlyRate,
+            entries: []
+          };
+        }
+        projectGroups[project.id].entries.push(entry);
+      }
+    });
+
+    // Generate invoice rows for each project
+    Object.values(projectGroups).forEach(projectGroup => {
+      // Project header
       invoiceHTML += `
+      <tr class="project-header">
+        <td colspan="5">${projectGroup.name}</td>
+      </tr>`;
+
+      let projectTotal = 0;
+
+      // Individual entries
+      projectGroup.entries.forEach(entry => {
+        const hours = msToHours(entry.duration);
+        const amount = hours * projectGroup.rate;
+        projectTotal += amount;
+        const entryDate = new Date(entry.startTime).toLocaleDateString();
+        const description = entry.description || 'Time tracked';
+
+        invoiceHTML += `
       <tr>
-        <td>${project.name}</td>
-        <td class="right-align">${hours}</td>
-        <td class="right-align">$${project.hourlyRate.toFixed(2)}</td>
-        <td class="right-align">$${project.earnings.toFixed(2)}</td>
+        <td>${entryDate}</td>
+        <td>
+          ${description}
+        </td>
+        <td class="center-align">${hours.toFixed(2)}</td>
+        <td class="right-align">$${projectGroup.rate.toFixed(2)}</td>
+        <td class="right-align">$${amount.toFixed(2)}</td>
+      </tr>`;
+      });
+
+      // Project subtotal
+      const projectHours = projectGroup.entries.reduce((sum, e) => sum + msToHours(e.duration), 0);
+      invoiceHTML += `
+      <tr class="subtotal-row">
+        <td colspan="2" class="right-align"><em>${projectGroup.name} Subtotal:</em></td>
+        <td class="center-align">${projectHours.toFixed(2)}</td>
+        <td></td>
+        <td class="right-align">$${projectTotal.toFixed(2)}</td>
       </tr>`;
     });
 
     invoiceHTML += `
       <tr class="total-row">
-        <td colspan="3" class="right-align">Total</td>
-        <td class="right-align">$${weekData.totalEarnings.toFixed(2)}</td>
+        <td colspan="4" class="right-align">TOTAL DUE</td>
+        <td class="right-align">$${periodData.totalEarnings.toFixed(2)}</td>
       </tr>
     </tbody>
   </table>
 
-  ${invoiceData.notes ? `<div><strong>Notes:</strong><br/>${invoiceData.notes}</div>` : ''}
+  ${invoiceData.notes ? `<div style="margin-top: 30px; padding: 15px; background-color: #f9fafb; border-left: 4px solid #4f46e5;"><strong>Notes:</strong><br/>${invoiceData.notes}</div>` : ''}
 </body>
 </html>
 `;
@@ -358,13 +459,14 @@ function App() {
     return invoiceHTML;
   };
 
-  const downloadInvoice = (weekData) => {
-    const invoiceHTML = generateInvoice(weekData);
+  const downloadInvoice = (periodData, isMonthly = false) => {
+    const invoiceHTML = generateInvoice(periodData, isMonthly);
     const blob = new Blob([invoiceHTML], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `invoice-${invoiceData.invoiceNumber || 'INV-001'}.html`;
+    const periodType = isMonthly ? 'monthly' : 'weekly';
+    a.download = `invoice-${periodType}-${invoiceData.invoiceNumber || 'INV-001'}.html`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -529,7 +631,7 @@ function App() {
         </div>
 
         {/* Navigation */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-6 bg-white rounded-xl shadow-md p-2">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-6 bg-white rounded-xl shadow-md p-2">
           <button
             onClick={() => setCurrentView('tracker')}
             className={`px-4 py-3 rounded-lg font-medium transition-colors flex items-center justify-center gap-2 ${
@@ -556,6 +658,15 @@ function App() {
           >
             <Calendar className="w-5 h-5" />
             <span className="hidden sm:inline">Weekly</span>
+          </button>
+          <button
+            onClick={() => setCurrentView('monthly')}
+            className={`px-4 py-3 rounded-lg font-medium transition-colors flex items-center justify-center gap-2 ${
+              currentView === 'monthly' ? 'bg-indigo-600 text-white' : 'text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            <Calendar className="w-5 h-5" />
+            <span className="hidden sm:inline">Monthly</span>
           </button>
           <button
             onClick={() => setCurrentView('invoice')}
@@ -807,12 +918,81 @@ function App() {
                     <button
                       onClick={() => {
                         setSelectedWeek(weekData);
+                        setSelectedMonth(null);
                         setCurrentView('invoice');
                       }}
                       className="mt-4 w-full px-4 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2"
                     >
                       <FileText className="w-4 h-4" />
                       Generate Invoice for This Week
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+
+        {/* Monthly Summary View */}
+        {currentView === 'monthly' && (
+          <div className="space-y-6">
+            {getMonthlyData().length === 0 ? (
+              <div className="bg-white rounded-xl shadow-md p-12 text-center">
+                <Calendar className="w-16 h-16 mx-auto mb-4 opacity-50 text-gray-400" />
+                <p className="text-lg text-gray-500">No time entries yet. Start tracking to see monthly summaries!</p>
+              </div>
+            ) : (
+              getMonthlyData().map(([monthKey, monthData]) => {
+                const monthStart = new Date(monthData.monthStart);
+                const monthEnd = new Date(monthData.monthEnd);
+
+                return (
+                  <div key={monthKey} className="bg-white rounded-xl shadow-md p-6">
+                    <div className="border-b pb-4 mb-4">
+                      <h3 className="text-xl font-bold text-gray-800">
+                        {monthStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                      </h3>
+                      <p className="text-sm text-gray-500 mt-1">
+                        {monthStart.toLocaleDateString()} - {monthEnd.toLocaleDateString()}
+                      </p>
+                      <div className="mt-3 flex gap-6">
+                        <div>
+                          <p className="text-sm text-gray-600">Total Hours</p>
+                          <p className="text-2xl font-bold text-indigo-600">{monthData.totalHours.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Total Earnings</p>
+                          <p className="text-2xl font-bold text-green-600">${monthData.totalEarnings.toFixed(2)}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      {Object.values(monthData.projects).map((projectData, idx) => (
+                        <div key={idx} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                          <div>
+                            <p className="font-semibold text-gray-800">{projectData.name}</p>
+                            <p className="text-sm text-gray-500">
+                              {msToHours(projectData.duration).toFixed(2)} hrs @ ${projectData.hourlyRate.toFixed(2)}/hr
+                            </p>
+                          </div>
+                          <p className="text-lg font-semibold text-indigo-600">
+                            ${projectData.earnings.toFixed(2)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setSelectedMonth(monthData);
+                        setSelectedWeek(null);
+                        setCurrentView('invoice');
+                      }}
+                      className="mt-4 w-full px-4 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <FileText className="w-4 h-4" />
+                      Generate Invoice for This Month
                     </button>
                   </div>
                 );
@@ -875,23 +1055,39 @@ function App() {
               </div>
             </div>
 
-            {selectedWeek ? (
+            {selectedWeek || selectedMonth ? (
               <div className="border-t pt-4">
                 <h3 className="font-semibold text-gray-800 mb-3">Invoice Preview</h3>
                 <div className="bg-gray-50 p-4 rounded-lg mb-4">
-                  <p className="text-sm text-gray-600 mb-2">
-                    Week: {new Date(selectedWeek.weekStart).toLocaleDateString()} - {new Date(new Date(selectedWeek.weekStart).getTime() + 6 * 24 * 60 * 60 * 1000).toLocaleDateString()}
-                  </p>
-                  <p className="text-2xl font-bold text-indigo-600">
-                    Total: ${selectedWeek.totalEarnings.toFixed(2)}
-                  </p>
-                  <p className="text-sm text-gray-600">
-                    {selectedWeek.totalHours.toFixed(2)} hours tracked
-                  </p>
+                  {selectedWeek ? (
+                    <>
+                      <p className="text-sm text-gray-600 mb-2">
+                        <strong>Week:</strong> {new Date(selectedWeek.weekStart).toLocaleDateString()} - {new Date(new Date(selectedWeek.weekStart).getTime() + 6 * 24 * 60 * 60 * 1000).toLocaleDateString()}
+                      </p>
+                      <p className="text-2xl font-bold text-indigo-600">
+                        Total: ${selectedWeek.totalEarnings.toFixed(2)}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        {selectedWeek.totalHours.toFixed(2)} hours tracked
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm text-gray-600 mb-2">
+                        <strong>Month:</strong> {new Date(selectedMonth.monthStart).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                      </p>
+                      <p className="text-2xl font-bold text-indigo-600">
+                        Total: ${selectedMonth.totalEarnings.toFixed(2)}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        {selectedMonth.totalHours.toFixed(2)} hours tracked
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 <button
-                  onClick={() => downloadInvoice(selectedWeek)}
+                  onClick={() => downloadInvoice(selectedWeek || selectedMonth, !!selectedMonth)}
                   className="w-full px-6 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
                 >
                   <Download className="w-5 h-5" />
@@ -900,13 +1096,21 @@ function App() {
               </div>
             ) : (
               <div className="text-center py-8 text-gray-500">
-                <p>Go to Weekly Summary to select a week for invoicing</p>
-                <button
-                  onClick={() => setCurrentView('weekly')}
-                  className="mt-4 px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
-                >
-                  View Weekly Summary
-                </button>
+                <p>Go to Weekly or Monthly Summary to select a period for invoicing</p>
+                <div className="flex gap-3 justify-center mt-4">
+                  <button
+                    onClick={() => setCurrentView('weekly')}
+                    className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
+                  >
+                    View Weekly Summary
+                  </button>
+                  <button
+                    onClick={() => setCurrentView('monthly')}
+                    className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
+                  >
+                    View Monthly Summary
+                  </button>
+                </div>
               </div>
             )}
           </div>
