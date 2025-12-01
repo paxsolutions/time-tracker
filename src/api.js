@@ -1,5 +1,32 @@
 const API_URL = 'http://localhost:3001/api';
 
+// Clients API
+export const clientsApi = {
+  getAll: async () => {
+    const response = await fetch(`${API_URL}/clients`);
+    if (!response.ok) throw new Error('Failed to fetch clients');
+    return response.json();
+  },
+
+  create: async (client) => {
+    const response = await fetch(`${API_URL}/clients`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(client),
+    });
+    if (!response.ok) throw new Error('Failed to create client');
+    return response.json();
+  },
+
+  delete: async (id) => {
+    const response = await fetch(`${API_URL}/clients/${id}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) throw new Error('Failed to delete client');
+    return response.json();
+  },
+};
+
 // Projects API
 export const projectsApi = {
   getAll: async () => {

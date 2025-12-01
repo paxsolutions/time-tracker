@@ -1,13 +1,15 @@
 import { Calendar, CalendarPlus, ChevronLeft, ChevronRight, Clock, DollarSign, Download, Edit2, FileText, Play, Plus, Square, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { entriesApi, projectsApi, timerApi } from './api';
+import { clientsApi, entriesApi, projectsApi, timerApi } from './api';
 
 function App() {
   const [projects, setProjects] = useState([]);
+  const [clients, setClients] = useState([]);
   const [timeEntries, setTimeEntries] = useState([]);
   const [activeTimer, setActiveTimer] = useState(null);
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectRate, setNewProjectRate] = useState('');
+  const [newProjectClient, setNewProjectClient] = useState({ name: '', email: '' });
   const [elapsedTime, setElapsedTime] = useState(0);
   const [currentView, setCurrentView] = useState('tracker'); // 'tracker', 'calendar', 'weekly', 'monthly', 'invoice'
   const [editingProject, setEditingProject] = useState(null);
@@ -28,8 +30,9 @@ function App() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [projectsData, entriesData, activeTimerData] = await Promise.all([
+        const [projectsData, clientsData, entriesData, activeTimerData] = await Promise.all([
           projectsApi.getAll(),
+          clientsApi.getAll(),
           entriesApi.getAll(),
           timerApi.getActive()
         ]);
@@ -39,6 +42,8 @@ function App() {
           id: p.id,
           name: p.name,
           hourlyRate: parseFloat(p.hourly_rate),
+          clientName: p.client_name,
+          clientEmail: p.client_email,
           createdAt: new Date(p.created_at).getTime()
         }));
 
@@ -53,6 +58,7 @@ function App() {
         }));
 
         setProjects(transformedProjects);
+        setClients(clientsData);
         setTimeEntries(transformedEntries);
 
         if (activeTimerData && activeTimerData.projectId) {
@@ -97,22 +103,44 @@ function App() {
         const newProject = await projectsApi.create({
           name: newProjectName.trim(),
           hourlyRate: parseFloat(newProjectRate) || 0,
+          clientName: newProjectClient.name.trim() || null,
+          clientEmail: newProjectClient.email.trim() || null,
         });
 
         const transformedProject = {
           id: newProject.id,
           name: newProject.name,
           hourlyRate: parseFloat(newProject.hourly_rate),
+          clientName: newProject.client_name,
+          clientEmail: newProject.client_email,
           createdAt: new Date(newProject.created_at).getTime()
         };
 
         setProjects([...projects, transformedProject]);
         setNewProjectName('');
         setNewProjectRate('');
+        setNewProjectClient({ name: '', email: '' });
+
+        // Reload clients list if client was added
+        if (newProject.client_name) {
+          const clientsData = await clientsApi.getAll();
+          setClients(clientsData);
+        }
       } catch (error) {
         console.error('Error creating project:', error);
         alert('Failed to create project');
       }
+    }
+  };
+
+  const handleClientSelect = (clientName) => {
+    if (clientName) {
+      const client = clients.find(c => c.name === clientName);
+      if (client) {
+        setInvoiceData({ ...invoiceData, clientName: client.name, clientEmail: client.email });
+      }
+    } else {
+      setInvoiceData({ ...invoiceData, clientName: '', clientEmail: '' });
     }
   };
 
@@ -683,23 +711,42 @@ function App() {
         {currentView === 'tracker' && (
           <div className="bg-white rounded-xl shadow-md p-6 mb-6">
             <h2 className="text-xl font-semibold text-gray-800 mb-4">Add New Project</h2>
-            <form onSubmit={addProject} className="flex gap-3">
-              <input
-                type="text"
-                value={newProjectName}
-                onChange={(e) => setNewProjectName(e.target.value)}
-                placeholder="Project name..."
-                className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              />
-              <div className="relative">
-                <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+            <form onSubmit={addProject} className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <input
-                  type="number"
-                  step="0.01"
-                  value={newProjectRate}
-                  onChange={(e) => setNewProjectRate(e.target.value)}
-                  placeholder="Hourly rate"
-                  className="w-40 pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  type="text"
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  placeholder="Project name..."
+                  required
+                  className="px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                />
+                <div className="relative">
+                  <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={newProjectRate}
+                    onChange={(e) => setNewProjectRate(e.target.value)}
+                    placeholder="Hourly rate"
+                    className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  value={newProjectClient.name}
+                  onChange={(e) => setNewProjectClient({ ...newProjectClient, name: e.target.value })}
+                  placeholder="Client name (optional)"
+                  className="px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                />
+                <input
+                  type="email"
+                  value={newProjectClient.email}
+                  onChange={(e) => setNewProjectClient({ ...newProjectClient, email: e.target.value })}
+                  placeholder="Client email (optional)"
+                  className="px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                 />
               </div>
               <button
@@ -1011,26 +1058,34 @@ function App() {
 
             <div className="space-y-4 mb-6">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Client Name</label>
-                <input
-                  type="text"
+                <label className="block text-sm font-medium text-gray-700 mb-2">Select Client</label>
+                <select
                   value={invoiceData.clientName}
-                  onChange={(e) => setInvoiceData({ ...invoiceData, clientName: e.target.value })}
-                  placeholder="Enter client name"
+                  onChange={(e) => handleClientSelect(e.target.value)}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
+                >
+                  <option value="">-- Select a client --</option>
+                  {clients.map((client, idx) => (
+                    <option key={idx} value={client.name}>
+                      {client.name} ({client.email})
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-2 text-sm text-gray-500">
+                  💡 Add clients when creating projects in the Timer view
+                </p>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Client Email</label>
-                <input
-                  type="email"
-                  value={invoiceData.clientEmail}
-                  onChange={(e) => setInvoiceData({ ...invoiceData, clientEmail: e.target.value })}
-                  placeholder="client@example.com"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
+              {invoiceData.clientName && (
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-sm text-gray-600">
+                    <strong>Selected Client:</strong> {invoiceData.clientName}
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    <strong>Email:</strong> {invoiceData.clientEmail}
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Invoice Number</label>

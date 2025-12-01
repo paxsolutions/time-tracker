@@ -24,15 +24,62 @@ const pool = mysql.createPool({
   queueLimit: 0
 });
 
-// Test database connection
+// Test database connection and initialize tables
 pool.getConnection()
-  .then(connection => {
+  .then(async (connection) => {
     console.log('✅ Database connected successfully');
+
+    // Add client fields to projects table if they don't exist
+    try {
+      await connection.query(`
+        ALTER TABLE projects
+        ADD COLUMN IF NOT EXISTS client_name VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS client_email VARCHAR(255)
+      `);
+      console.log('✅ Projects table updated with client fields');
+    } catch (error) {
+      // MySQL doesn't support IF NOT EXISTS for ALTER COLUMN, so we'll check differently
+      const [columns] = await connection.query(`
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'projects' AND COLUMN_NAME IN ('client_name', 'client_email')
+      `, [process.env.DB_NAME]);
+
+      if (columns.length === 0) {
+        await connection.query(`
+          ALTER TABLE projects
+          ADD COLUMN client_name VARCHAR(255),
+          ADD COLUMN client_email VARCHAR(255)
+        `);
+        console.log('✅ Projects table updated with client fields');
+      } else {
+        console.log('✅ Projects table already has client fields');
+      }
+    }
+
     connection.release();
   })
   .catch(err => {
     console.error('❌ Database connection failed:', err);
   });
+
+// ==================== CLIENT ROUTES ====================
+
+// Get unique clients from projects
+app.get('/api/clients', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT client_name as name, client_email as email
+      FROM projects
+      WHERE client_name IS NOT NULL AND client_name != ''
+      ORDER BY client_name ASC
+    `);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching clients:', error);
+    res.status(500).json({ error: 'Failed to fetch clients' });
+  }
+});
 
 // ==================== PROJECT ROUTES ====================
 
@@ -50,10 +97,10 @@ app.get('/api/projects', async (req, res) => {
 // Create a new project
 app.post('/api/projects', async (req, res) => {
   try {
-    const { name, hourlyRate } = req.body;
+    const { name, hourlyRate, clientName, clientEmail } = req.body;
     const [result] = await pool.query(
-      'INSERT INTO projects (name, hourly_rate) VALUES (?, ?)',
-      [name, hourlyRate || 0]
+      'INSERT INTO projects (name, hourly_rate, client_name, client_email) VALUES (?, ?, ?, ?)',
+      [name, hourlyRate || 0, clientName || null, clientEmail || null]
     );
 
     const [newProject] = await pool.query(
